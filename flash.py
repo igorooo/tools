@@ -30,7 +30,11 @@ def find_rec(node, element, result, dir=None):
         find_rec(item, element, result, dir)
     return result
 
-# get all files specified in tag 'download_file' with attribs fastboot || fastboot_complete || gpt_file
+def check_parent_dir(dir):
+    if dir == None or dir == 'common':
+        return False
+    return True
+
 def get_fastboot_files_paths(files, pf, st, types=['fastboot', 'fastboot_complete', 'gpt_file']):
     images = {}
     for item, dir in files:
@@ -55,6 +59,7 @@ def get_fastboot_files_paths(files, pf, st, types=['fastboot', 'fastboot_complet
             name = item.findall('file_name')[0].text
             paths = item.findall('file_path')
             path = None
+            # todo: check if redundant code
             if pf_in_parent:
                 path = paths[0].text
                 if dir != None and dir != 'common':
@@ -80,7 +85,7 @@ def main():
     root = ET.parse(CREDS['contents']).getroot()
     files = []
     find_rec(root, 'download_file', files)
-    files = get_fastboot_files_paths(files, CREDS['pf'], CREDS['st'])
+    files = get_fastboot_files_paths(files, '8155', 'ufs')
 
     ssh = paramiko.SSHClient()
     ssh.load_system_host_keys()
@@ -90,66 +95,79 @@ def main():
     with SCPClient(ssh.get_transport()) as scp:
         print('----- Compressing files -----')
         temp_path = CREDS['host_project_path'] + TEMP_DIR
-        print('-- Create temp dir: ' + temp_path)
+        print('-- Create temp dir')
         ssh_stdin, ssh_stdout, ssh_stderr = ssh.exec_command('mkdir -p ' + temp_path)
         print(ssh_stderr.read())
 
         flash_dict = {}
-        allimgs = True
-        y = input("Downlaod all images? [If no press 'n' + Enter]")
-        if y == 'n':
-            allimgs = False
         # Copy files to temp dir
         for name, (path, partition) in files.items():
-            if allimgs == False:
-                y = input("Skip downloading " + name + "? [If yes press 'y' + Enter]")
-                if y == 'y':
-                    print('Skipping ' + name)
+            answer = None
+            while answer not in ("y", "n", "c", ""):
+                answer = input("Download " + path + " to '" + partition + "'? [Y]es / [n]o / [c]hange: ")
+                answer = answer.lower()
+                if answer == 'n':
                     continue
-            #print("copy: " + name)
+                elif answer == 'c' or answer == 'y' or answer == "":
+                    if answer == 'c' or partition == "true":
+                        partition = input("Enter partition name:")
+                else:
+                    print("Please answer y/n/c")
+            if answer == 'n':
+                continue
+
+            print("copying '" + name + "' as '" + partition +"' partition")
             cmd = 'cp ' + CREDS['host_project_path'] + '/' + path + ' ' + temp_path
             ssh_stdin, ssh_stdout, ssh_stderr = ssh.exec_command(cmd)
             print(ssh_stderr.read())
             flash_dict[partition] = name
 
-        # Compress temp dir and download to local folder
+        # Compress temp dir and downlaod to local folder
         cm_file = CREDS['host_project_path'] + '/' + TARGET_TAR + '.tar.bz2'
         cmd = 'tar -pcjvf ' + cm_file + ' -C' + temp_path + ' .'
+        print("Compressing...")
         ssh_stdin, ssh_stdout, ssh_stderr = ssh.exec_command(cmd)
         print(ssh_stderr.read())
+        print("Copying...")
         scp.get(cm_file, TARGET_TAR)
 
-    tf = tarfile.open(TARGET_TAR)
+    askEachFile = False
+    answer = None
+    while answer not in ("a", "n", "c", ""):
+        answer = input("Flash downloaded files? [A]ll / [n]one / [c]hoose ")
+        answer = answer.lower()
+        if answer == 'n':
+            exit
+        elif answer == 'a' or answer == "":
+            continue
+        elif answer == 'c':
+            askEachFile = true
+            continue
+        else:
+            print("Please answer y/n")
+
+    print("Decompressing...")
+    # TARGET_TAR
+    tf = tarfile.open('snapdragon-auto-gen3-lv-0-1_hlos_dev-out.tar.bz2')
     tf.extractall()
 
-    flash_dict = sorted(flash_dict.items(), key=sort_key)
+    print("Flashing...")
+    for partition, name in flash_dict.items():
+        answer = None
+        while answer not in ("y", "n", ""):
+            if askEachFile:
+                answer = input("Flash '" + name + "'  to '" + partition + "'? [Y]es / [n]o: ")
+            else:
+                answer = 'y'
 
-    print('------------------------------------')
-    for part in flash_dict:
-        print(part)
-    print('------------------------------------')
-
-    y = input("Skip flashing? [If yes press 'y' + Enter]")
-    if y == 'y':
-        return
-
-    for partition, name in flash_dict:
-        if partition == 'true':
-            partition = input('Enter partition for' + name + ':')
-        else:
-            y = input('Flash ' + name + ' to ' + partition + "? [If no press 'n' and Enter]")
-            if y == 'n':
-                partition = input('Enter new partition for +' + name + ':')
-        print("Flashing " + name + ' (partition)')
-        os.system('fastboot flash ' + partition + ' ' + name)
-
-def sort_key(item):
-    if 'partition:' in item[0]:
-        temp = str(item[0])
-        return int(temp.replace('partition:', ''))
-    else:
-        # any number larger than gpt partitions number
-        return 100
+            answer = answer.lower()
+            if answer == 'n':
+                continue
+            elif answer == 'y' or answer == "":
+                print("Flashing " + name + ' to ' + partition)
+                os.system('fastboot flash ' + partition + ' ' + name)
+            else:
+                print("Please answer y/n")
 
 if __name__ == '__main__':
     main()
